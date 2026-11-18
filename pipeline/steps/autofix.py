@@ -27,13 +27,88 @@ Bẫy cần nghĩ tới (có test cho từng cái)
 
 Gợi ý: `yaml.safe_load / safe_dump`.
 """
-from collections import defaultdict  # noqa: F401
+from collections import defaultdict
 
-import yaml  # noqa: F401
+import yaml
 
-from ..common import ERROR, parse_yolo_line  # noqa: F401
+from ..common import ERROR, parse_yolo_line
+
+REMOVE = {"DUP_IMAGE_EXACT", "DUP_IMAGE_NEAR", "LEAK_TEST", "CORRUPT_IMAGE", "BAD_SIZE"}
+DROP = {"BAD_FORMAT", "BAD_CLASS_ID", "BOX_ZERO", "DUP_BOX"}
+LINE_CODES = DROP | {"BOX_OUT_OF_IMAGE"}
+
+
+def _row(image, line, action, before, after):
+    return dict(image=image, line=line, action=action, before=before, after=after)
+
+
+def _clip(ln):
+    """Cắt box về [0,1]; trả None nếu không parse được hoặc không còn diện tích."""
+    try:
+        c, x, y, w, h = parse_yolo_line(ln)
+    except (ValueError, OverflowError):
+        return None
+    x1, x2 = max(0.0, x - w / 2), min(1.0, x + w / 2)
+    y1, y2 = max(0.0, y - h / 2), min(1.0, y + h / 2)
+    nw, nh = x2 - x1, y2 - y1
+    if nw <= 0 or nh <= 0:
+        return None
+    return f"{c} {(x1 + x2) / 2:.6f} {(y1 + y2) / 2:.6f} {nw:.6f} {nh:.6f}"
 
 
 def fix(ds, issues, cfg):
-    # TODO
-    raise NotImplementedError("autofix chưa làm")
+    errs = [i for i in issues if i.severity == ERROR]
+    fixes = []
+
+    # 1) data.yaml: ghi lại names đúng cfg["classes"] (một lần dù có nhiều issue)
+    if any(i.code == "BAD_CLASS_NAME" for i in errs):
+        data = {}
+        if ds.yaml_path.exists():
+            data = yaml.safe_load(ds.yaml_path.read_text(encoding="utf-8")) or {}
+        new_names = dict(enumerate(cfg["classes"]))
+        fixes.append(_row("data.yaml", "", "rename_classes", str(ds.yaml_names()), str(new_names)))
+        data["names"] = new_names
+        ds.yaml_path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+
+    # 2) xoá ảnh (+ nhãn)
+    removed = set()
+    for stem in sorted({i.image for i in errs if i.code in REMOVE}):
+        removed.add(stem)
+        ip = ds.image_path(stem)
+        if ip is None:
+            continue
+        code = next(i.code for i in errs if i.image == stem and i.code in REMOVE)
+        ip.unlink()
+        if ds.label_path(stem).exists():
+            ds.label_path(stem).unlink()
+        fixes.append(_row(stem, "", "remove_image", code, "đã xoá ảnh + nhãn"))
+
+    # 3) thiếu file nhãn: máy không bịa nhãn
+    for stem in sorted({i.image for i in errs if i.code == "MISSING_LABEL_FILE"} - removed):
+        fixes.append(_row(stem, "", "needs_label", "(không có file)", "chuyển người gán"))
+
+    # 4) lỗi theo dòng: gom theo file, dùng số dòng GỐC, ghi một lần
+    per = defaultdict(lambda: defaultdict(set))
+    for i in errs:
+        if i.line is not None and i.code in LINE_CODES:
+            per[i.image][i.line].add(i.code)
+    for stem in sorted(per):
+        lp = ds.label_path(stem)
+        if stem in removed or not lp.exists():
+            continue
+        out = []
+        for no, ln in enumerate(lp.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            codes = per[stem].get(no)
+            if not codes:
+                out.append(ln)
+            elif codes & DROP:
+                fixes.append(_row(stem, no, "drop_line", ln, ""))
+            else:                                     # chỉ còn BOX_OUT_OF_IMAGE
+                new = _clip(ln)
+                if new is None:
+                    fixes.append(_row(stem, no, "drop_line", ln, ""))
+                else:
+                    out.append(new)
+                    fixes.append(_row(stem, no, "clip_box", ln, new))
+        lp.write_text("".join(l + "\n" for l in out), encoding="utf-8")
+    return fixes
