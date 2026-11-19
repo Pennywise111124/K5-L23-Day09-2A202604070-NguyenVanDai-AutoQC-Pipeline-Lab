@@ -1,7 +1,7 @@
 # Báo cáo Day 09 — Nguyễn Văn Đại, 2A202604070
 
 ## 1. Kết luận trước
-Pipeline kết luận **Hold**. Lô thô có 224 ảnh; bước nhận dữ liệu loại 22 ảnh, còn 202 ảnh vào QC và 202 ảnh trong bản xuất `clean_v1` (bản NHÁP, chưa phát hành). Không còn lỗi bắt buộc, nhưng 38/202 ảnh (18,8%) còn cảnh báo chưa được người duyệt, vượt ngưỡng 10% của cổng. Nguyên nhân chính: hàng đợi 125 ảnh lớn hơn ngân sách duyệt 80 ảnh, nên 45 ảnh không ai xem.
+Pipeline kết luận **Hold**. Lô thô có 224 ảnh; bước nhận dữ liệu loại 22 ảnh, còn 202 ảnh vào QC và 202 ảnh trong bản xuất `clean_v1` (bản NHÁP, chưa phát hành). Không còn lỗi bắt buộc, nhưng 38/202 ảnh (18,8%) còn cảnh báo chưa được người duyệt, vượt ngưỡng 10% của cổng. Nguyên nhân chính: hàng đợi 125 ảnh lớn hơn ngân sách duyệt 80 ảnh, nên 45 ảnh không ai xem. Kết quả train so sánh (2 seed): dữ liệu sau pipeline cho mAP50 thấp hơn dữ liệu gốc 0,025 nhưng nằm trong nhiễu giữa các seed, nên chưa kết luận được pipeline làm mô hình tốt hơn (mục 5).
 
 ## 2. Lỗi và phân việc
 Số liệu là số dòng báo cáo trong `02_error_list_v1`. Mã ở cửa vào lấy mẫu số 224 ảnh thô; mã QC lấy mẫu số 202 ảnh.
@@ -14,12 +14,12 @@ Số liệu là số dòng báo cáo trong `02_error_list_v1`. Mã ở cửa và
 | BAD_FORMAT, BAD_CLASS_ID, BOX_ZERO, DUP_BOX | 3, 6, 4, 7 | Máy | Lỗi cú pháp rõ ràng: `drop_line`. |
 | BOX_OUT_OF_IMAGE | 8 | Máy | Cắt box về trong ảnh (`clip_box`), xoá dòng nếu hết diện tích. |
 | BAD_CLASS_NAME | 2 | Máy | Ghi lại `names` trong data.yaml đúng thứ tự của dự án. |
-| CLASS_RARE | 4 | Máy (gián tiếp) | Biến mất ở v2 vì các dòng có id lớp sai (BAD_CLASS_ID) đã bị xoá. |
+| CLASS_RARE | 4 | Máy (gián tiếp) | Đếm theo token lớp đầu dòng, kể cả id lạ (lớp có < 5 box); biến mất ở v2 khi các dòng BAD_CLASS_ID bị xoá. |
 | MISSING_LABEL_FILE | 6 | Người | Máy không được bịa nhãn: chuyển người gán (`needs_label`). |
 | POSSIBLE_MISSING / WRONG_CLASS / LOOSE_BOX / FALSE_POS | 53 / 18 / 28 / 29 | Người | Lỗi ngữ nghĩa, model chỉ nghi ngờ nên phải qua mắt người. |
 | BOX_TINY, BOX_HUGE, EMPTY_LABEL | 6, 3, 12 | Người | Cảnh báo theo quy tắc, cần xem ý nghĩa. |
 
-Hàng đợi `05_review_queue.csv` xếp theo tổng trọng số cảnh báo của mỗi ảnh. `NEEDS_LABEL` có trọng số 10 nên cả 6 ảnh thiếu nhãn đứng đầu (đều nằm trong 80 ảnh được duyệt), kế đến là `WRONG_CLASS` (3), `MISSING` và `FALSE_POS` (2). Ngân sách duyệt là 80/125 ảnh. So `04_error_list_v2` với `07_error_list_v3`, người duyệt xử lý được `POSSIBLE_MISSING` 53→13, `WRONG_CLASS` 18→3, `LOOSE_BOX` 28→20, `FALSE_POS` 24→21, nên `FALSE_POS` và `LOOSE_BOX` là hai nhóm còn nhiều nhất.
+Hàng đợi `05_review_queue.csv` xếp theo tổng trọng số cảnh báo của mỗi ảnh. `NEEDS_LABEL` có trọng số 10 nên cả 6 ảnh thiếu nhãn đứng đầu (đều nằm trong 80 ảnh được duyệt), kế đến là `WRONG_CLASS` (3), `MISSING` và `FALSE_POS` (2). Ảnh có dòng bị máy xoá hoặc cắt (`FIXED_DROP_LINE` 2, `FIXED_CLIP_BOX` 1) cũng vào hàng đợi, nên hàng đợi gồm cả ảnh không còn cảnh báo. Ngân sách duyệt là 80/125 ảnh. So `04_error_list_v2` với `07_error_list_v3`, người duyệt xử lý được `POSSIBLE_MISSING` 53→13, `WRONG_CLASS` 18→3, `LOOSE_BOX` 28→20, `FALSE_POS` 24→21, nên `FALSE_POS` và `LOOSE_BOX` là hai nhóm còn nhiều nhất.
 
 ## 3. Calibration (2 ngưỡng)
 
@@ -40,12 +40,34 @@ Hàng đợi `05_review_queue.csv` xếp theo tổng trọng số cảnh báo c�
 
 **(b) Điểm mù** (bằng chứng từ `calibration_report.md` ở cấu hình đã chọn: `phash_dist` 10, `conf` 0,6).
 
-- **Ảnh trùng bị biến đổi nhiều.** `DUP_IMAGE_NEAR` chỉ bắt 4/6 ca (R 0,67). Hai ca bị sót là các ca có mức biến đổi cao nhất trong `MANIFEST`: `calib_037` (mức 3, phash 16) và `calib_038` (mức 4, phash 18), đều vượt ngưỡng 10. Bốn ca còn lại có phash 0, 4, 2, 2. Hạ ngưỡng lên 16 chỉ lấy thêm `calib_037` và sát mức tụt, nên ảnh trùng bị biến đổi nhiều vẫn lọt vào dataset.
+- **Ảnh trùng bị biến đổi nhiều.** `DUP_IMAGE_NEAR` chỉ bắt 4/6 ca (R 0,67). Hai ca bị sót là các ca có mức biến đổi cao nhất trong `MANIFEST`: `calib_037` (mức 3, phash 16) và `calib_038` (mức 4, phash 18), đều vượt ngưỡng 10. Bốn ca còn lại có phash 0, 4, 2, 2. Nâng ngưỡng lên 16 chỉ lấy thêm `calib_037` và sát mức tụt, nên ảnh trùng bị biến đổi nhiều vẫn lọt vào dataset.
 - **Box lỏng hoặc lệch.** `POSSIBLE_LOOSE_BOX` chỉ bắt 1/5 lỗi chèn (R 0,20), 4 ca lọt.
 - **Nhầm lớp và báo động giả.** `POSSIBLE_WRONG_CLASS` bỏ sót 1/6 ca. `POSSIBLE_FALSE_POS` có precision chỉ 0,31 (5 ca thật, 11 báo động giả), tức người duyệt phải mở xem nhiều ảnh vô ích.
 
-## 5. Train: raw vs clean (tùy chọn, chấm riêng)
-Chưa chạy: thời gian dành cho phần lõi (4 module, calibrate, báo cáo), chưa chạy được notebook train trên Colab.
+## 5. Train: raw vs clean
+
+**Thiết lập.** Cùng mô hình khởi tạo `yolo26n.pt`, cùng siêu tham số (20 epoch, imgsz 640, batch 16), cùng val (`gold_val`, 40 ảnh) và cùng test (`data/test`, 100 ảnh nhãn người); chỉ khác dữ liệu train. `raw` gồm toàn bộ 224 ảnh với nhãn gốc, không sửa gì. `clean` gồm 202 ảnh theo `manifest.json` của `clean_v1` (bản NHÁP vì kết luận pipeline là Hold). Mỗi biến thể chạy 2 seed (0 và 1) bằng `scripts/train_compare.py` trên Colab. Bảng dưới do `scripts/summarize_results.py` sinh ra, và `manifest_sha1` của các lần chạy `clean` khớp với export hiện tại (`check_submission.py` không báo lỗi).
+
+| biến thể | #ảnh train | số seed | mAP50 (TB ± độ lệch) | mAP50-95 (TB ± độ lệch) | precision (TB ± độ lệch) | recall (TB ± độ lệch) |
+|---|---|---|---|---|---|---|
+| raw | 224 | 2 | 0,726 ± 0,000 | 0,512 ± 0,004 | 0,764 ± 0,061 | 0,649 ± 0,028 |
+| clean | 202 | 2 | 0,701 ± 0,025 | 0,487 ± 0,008 | 0,759 ± 0,003 | 0,625 ± 0,019 |
+
+Chênh mAP50 (clean − raw) = **−0,025**.
+
+**Đọc kết quả so với độ nhiễu giữa seed.**
+- **mAP50:** chênh −0,025 bằng đúng độ lệch giữa seed của clean (0,025). Hai seed của clean là 0,718 và 0,683, còn hai seed của raw là 0,7256 và 0,7259; seed 0 của clean chỉ kém raw 0,008 và chính seed 1 kéo trung bình xuống, nên chênh lệch không phân biệt được với nhiễu. Độ lệch 0,000 của raw chỉ cho biết hai seed trùng nhau đến 3 chữ số thập phân; với n = 2 không thể coi đó là bằng chứng nhiễu nhỏ.
+- **Precision và recall:** chênh khoảng −0,005 và −0,024, nhỏ hơn độ lệch giữa seed (precision của raw lệch tới 0,061), nên không kết luận được.
+- **mAP50-95:** chênh khoảng −0,024 (raw 0,5144 và 0,509; clean 0,4933 và 0,4815). Cả hai seed của raw đều cao hơn cả hai seed của clean, và chênh lệch lớn hơn độ lệch của từng nhóm (0,004 và 0,008). Đây là gợi ý rằng raw nhỉnh hơn ở độ chính xác của box, nhưng độ lệch ước lượng từ 2 điểm rất không chắc và test chỉ có 100 ảnh, nên tôi chỉ coi là gợi ý, không phải kết luận.
+
+**Nguyên nhân có thể (chưa kiểm chứng) và cách kiểm.**
+1. **Rò rỉ test làm điểm của raw cao hơn thực tế.** Raw giữ 5 ảnh trùng ảnh test (`img_0049`, `0101`, `0167`, `0174`, `0221` ↔ `test_033`, `039`, `044`, `085`, `009`, phash 0, 6, 2, 0, 0), còn clean đã loại. Cách kiểm: đo lại cả hai mô hình trên test bỏ 5 ảnh đó (95 ảnh), hoặc train lại raw sau khi bỏ 5 ảnh train tương ứng. Chưa chạy.
+2. **Pipeline chỉ sửa lỗi cú pháp, còn Ultralytics tự xử lý nhãn hỏng của raw.** Máy chỉ xoá hoặc cắt dòng nhãn hỏng; cảnh báo ngữ nghĩa ở v3 vẫn còn (`POSSIBLE_MISSING` 13, `LOOSE_BOX` 20, `FALSE_POS` 21 dòng, 38 ảnh chưa duyệt). Trong khi đó, theo ghi chú trong notebook, Ultralytics tự bỏ ảnh có nhãn hỏng hoặc box tràn khi nạp raw, nên khoảng cách thật giữa hai bộ dữ liệu có thể nhỏ hơn con số lỗi của pipeline gợi ý. Cách kiểm: đọc dòng `train: Scanning` và các cảnh báo trong log của raw để biết raw thực sự train trên bao nhiêu ảnh (so với 224 và 202).
+3. **Clean ít dữ liệu hơn.** Clean ít hơn raw 22 ảnh (12 trùng, 5 rò rỉ, 2 hỏng, 3 quá nhỏ), khoảng 10% của một bộ chỉ vài trăm ảnh; trong số đó ảnh trùng ít thêm thông tin, nhưng 5 ảnh rò rỉ thì giúp raw (xem mục 1). Cách kiểm: tăng số seed lên ít nhất 5 để thấy nhiễu thật, và thêm biến thể `auto` (clean không có người duyệt) để tách riêng đóng góp của 80 ảnh người duyệt.
+
+**Kết luận.** Chưa thể kết luận dữ liệu sau pipeline làm mô hình tốt hơn: trên bộ test này clean thấp hơn raw 0,025 mAP50, nhưng chênh lệch nằm trong nhiễu giữa các seed, và 2 seed mỗi biến thể cùng test 100 ảnh không đủ để khẳng định chiều nào; riêng mAP50-95 có gợi ý raw nhỉnh hơn nhưng chưa đủ chắc. Điều có thể nói chắc là clean không còn ảnh nào trùng test mà pipeline phát hiện được, nên điểm của clean là ước lượng đáng tin hơn điểm của raw (raw có thể bị thổi phồng). Cũng cần nhớ clean là bản nháp Hold, còn 38 ảnh chưa duyệt, nên chưa phải "dữ liệu sạch" tối đa.
+
+**Việc tiếp theo.** (1) Đo lại trên test bỏ 5 ảnh rò rỉ để biết raw bị thổi phồng bao nhiêu. (2) Tăng lên ít nhất 5 seed (mỗi lần khoảng 4 phút trên T4). (3) Duyệt thêm để chuyển sang Release: ước tính thô cần khoảng 98 ảnh được duyệt thay vì 80 (38 − 20 = 18 ảnh nữa). Chưa đo được, vì trong lab này ngân sách duyệt bị ghim ở 80 và pipeline từ chối `--budget` lớn hơn 80; sau đó train lại `clean` trên bản đã phát hành. (4) Thêm biến thể `auto` để tách hiệu ứng của người duyệt.
 
 ## 6. Quyết định và ghi chú AI
 
